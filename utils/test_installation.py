@@ -15,14 +15,14 @@ def test_imports():
     logger.info("Testing module imports...")
     
     try:
-        from utils import (
+        from qala_processor import (
             ImageDownloader,
             ImageLoader,
             ImagePreprocessor,
             TileGenerator,
             YOLODetector,
             DetectionPostprocessor,
-            QanatClusterer,
+            QalaPipeline,
             GeospatialUtils,
             ResultVisualizer
         )
@@ -67,7 +67,7 @@ def test_tile_generator():
     logger.info("\nTesting TileGenerator...")
     
     try:
-        from utils import TileGenerator
+        from qala_processor import TileGenerator
         import numpy as np
         
         # Create test image
@@ -100,7 +100,7 @@ def test_postprocessor():
     logger.info("\nTesting DetectionPostprocessor...")
     
     try:
-        from utils import DetectionPostprocessor
+        from qala_processor import DetectionPostprocessor
         import numpy as np
         
         postprocessor = DetectionPostprocessor(iou_threshold=0.5)
@@ -132,10 +132,10 @@ def test_postprocessor():
 
 def test_clusterer():
     """Test qanat clustering."""
-    logger.info("\nTesting QanatClusterer...")
+    logger.info("\nTesting QalaPipeline...")
     
     try:
-        from utils import QanatClusterer
+        from qala_processor import QalaPipeline
         import numpy as np
         
         # Create test data (3 qanats with 5 shafts each)
@@ -156,7 +156,7 @@ def test_clusterer():
         
         centroids = np.array(centroids)
         
-        clusterer = QanatClusterer(eps=50.0, min_samples=3)
+        clusterer = QalaPipeline(eps=50.0, min_samples=3)
         labels = clusterer.cluster_shafts(centroids)
         
         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
@@ -172,7 +172,7 @@ def test_clusterer():
         return True
         
     except Exception as e:
-        logger.error(f"✗ QanatClusterer test failed: {e}")
+        logger.error(f"✗ QalaPipeline test failed: {e}")
         return False
 
 
@@ -209,7 +209,7 @@ def run_all_tests():
         ("Dependencies", test_dependencies),
         ("Tile Generator", test_tile_generator),
         ("Detection Postprocessor", test_postprocessor),
-        ("Qanat Clusterer", test_clusterer),
+        ("Qala Pipeline", test_clusterer),
         ("GPU Availability", test_gpu_availability)
     ]
     

@@ -8,7 +8,7 @@ I've created a complete, modular Python package for automated qanat detection fr
 
 ```
 qanat_detection/
-├── utils/                          # Core utility modules
+├── qala_processor/                 # Core utility modules
 │   ├── __init__.py                 # Package initialization
 │   ├── image_io.py                 # Image loading & downloading (470 lines)
 │   ├── preprocessing.py            # Tiling with overlap (310 lines)
@@ -109,7 +109,7 @@ Total: ~2,870 lines of production-quality Python code
   - Merge detections from overlapping tiles using NMS
   - Handle coordinate transformations
   - Convert boxes to centroids
-- **QanatClusterer**:
+- **QalaPipeline**:
   - DBSCAN clustering for qanat identification
   - Distance-based filtering
   - GeoDataFrame creation and export
@@ -151,9 +151,9 @@ python run_detection.py \
 
 ### Python API
 ```python
-from utils import (
+from qala_processor import (
     ImageLoader, TileGenerator, YOLODetector,
-    DetectionPostprocessor, QanatClusterer
+    DetectionPostprocessor, QalaPipeline
 )
 
 # Load image
@@ -172,7 +172,7 @@ postprocessor = DetectionPostprocessor(iou_threshold=0.5)
 merged = postprocessor.merge_tile_detections(detections, image.shape[:2])
 
 # Cluster into qanats
-clusterer = QanatClusterer(eps=100.0, min_samples=3)
+clusterer = QalaPipeline(eps=100.0, min_samples=3)
 centroids = postprocessor.boxes_to_centroids(merged['boxes'])
 labels = clusterer.cluster_shafts(centroids)
 

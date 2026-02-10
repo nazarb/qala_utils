@@ -31,7 +31,7 @@ pip install gdal==$(gdal-config --version)
 
 ```
 qanat_detection/
-├── utils/
+├── qala_processor/
 │   ├── __init__.py              # Package initialization
 │   ├── image_io.py              # Image loading and downloading
 │   ├── preprocessing.py         # Tiling and preprocessing
@@ -49,9 +49,9 @@ qanat_detection/
 ### Example 1: Process a Local TIF File
 
 ```python
-from utils import (
+from qala_processor import (
     ImageLoader, ImagePreprocessor, TileGenerator,
-    YOLODetector, DetectionPostprocessor, QanatClusterer,
+    YOLODetector, DetectionPostprocessor, QalaPipeline,
     GeospatialUtils, ResultVisualizer
 )
 
@@ -76,7 +76,7 @@ detections = detector.detect_tiles(tile_info, batch_size=16)
 postprocessor = DetectionPostprocessor(iou_threshold=0.5)
 merged = postprocessor.merge_tile_detections(detections, prepared.shape[:2])
 
-clusterer = QanatClusterer(eps=100.0, min_samples=3)
+clusterer = QalaPipeline(eps=100.0, min_samples=3)
 centroids = postprocessor.boxes_to_centroids(merged['boxes'])
 labels = clusterer.cluster_shafts(centroids)
 
@@ -97,7 +97,7 @@ map_obj = visualizer.visualize_clusters(
 ### Example 2: Download and Process Satellite Imagery
 
 ```python
-from utils import ImageDownloader
+from qala_processor import ImageDownloader
 
 # Download imagery for a bounding box
 downloader = ImageDownloader(output_dir="downloads/")
@@ -187,7 +187,7 @@ gdf = run_qanat_detection_pipeline(
 - `boxes_to_centroids()`: Convert boxes to points
 - Non-Maximum Suppression handles duplicate detections in overlap regions
 
-**QanatClusterer**: Cluster shafts into qanat systems
+**QalaPipeline**: Cluster shafts into qanat systems
 - `cluster_shafts()`: DBSCAN clustering
 - `calculate_shaft_distances()`: Distance statistics per cluster
 - `filter_by_shaft_spacing()`: Quality filtering

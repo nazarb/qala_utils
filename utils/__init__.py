@@ -6,7 +6,7 @@ A modular toolkit for automated qanat detection from satellite imagery using YOL
 from .image_io import ImageDownloader, ImageLoader
 from .preprocessing import ImagePreprocessor, TileGenerator
 from .yolo_inference import YOLODetector
-from .postprocessing import DetectionPostprocessor, QanatClusterer
+from .postprocessing import DetectionPostprocessor, QalaPipeline
 from .geospatial import GeospatialUtils
 from .visualization import ResultVisualizer
 
@@ -19,7 +19,7 @@ __all__ = [
     "TileGenerator",
     "YOLODetector",
     "DetectionPostprocessor",
-    "QanatClusterer",
+    "QalaPipeline",
     "GeospatialUtils",
     "ResultVisualizer",
 ]

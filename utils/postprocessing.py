@@ -256,7 +256,7 @@ class DetectionPostprocessor:
         return centroids
 
 
-class QanatClusterer:
+class QalaPipeline:
     """Cluster detected shafts into qanat systems using spatial join approach."""
     
     def __init__(
@@ -268,7 +268,7 @@ class QanatClusterer:
         overlap_threshold: float = 0.9  # Minimum overlap ratio to merge bboxes (90%)
     ):
         """
-        Initialize QanatClusterer with original pipeline parameters.
+        Initialize QalaPipeline with original pipeline parameters.
         
         Args:
             eps: DBSCAN epsilon parameter in geographic degrees (default: 0.0008)
@@ -283,7 +283,7 @@ class QanatClusterer:
         self.min_confidence_qanat_pair = min_confidence_qanat_pair
         self.overlap_threshold = overlap_threshold
         
-        logger.info(f"QanatClusterer initialized: eps={eps}, min_samples={min_samples}, overlap_threshold={overlap_threshold*100}%")
+        logger.info(f"QalaPipeline initialized: eps={eps}, min_samples={min_samples}, overlap_threshold={overlap_threshold*100}%")
     
     def boxes_to_geodataframe(
         self,

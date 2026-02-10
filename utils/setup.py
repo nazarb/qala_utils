@@ -30,7 +30,8 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/qanat-detection",
-    packages=find_packages(),
+    package_dir={"": ".."},
+    packages=["qala_processor"],
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Science/Research",
@@ -56,7 +57,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "qanat-detect=run_detection:main",
+            "qanat-detect=qala_processor.run_detection:main",
         ],
     },
     include_package_data=True,

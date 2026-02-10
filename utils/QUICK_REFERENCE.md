@@ -23,7 +23,7 @@ python run_detection.py -i image.tif -m model.pt \
 
 ### Python API
 ```python
-from utils import *
+from qala_processor import *
 
 # Load
 image, meta = ImageLoader().load_image("image.tif")
@@ -38,7 +38,7 @@ detections = YOLODetector("model.pt").detect_tiles(tiles)
 merged = DetectionPostprocessor().merge_tile_detections(detections, image.shape[:2])
 
 # Cluster
-labels = QanatClusterer(eps=100).cluster_shafts(centroids)
+labels = QalaPipeline(eps=100).cluster_shafts(centroids)
 
 # Export
 gdf = clusterer.create_geodataframe(centroids, labels, confidences, meta['geotransform'])
@@ -82,32 +82,32 @@ gdf.to_file("results.gpkg")
 
 ```python
 # Image I/O
-from utils import ImageDownloader, ImageLoader
+from qala_processor import ImageDownloader, ImageLoader
 downloader = ImageDownloader("output/")
 image, meta = ImageLoader().load_image("image.tif")
 
 # Preprocessing
-from utils import ImagePreprocessor, TileGenerator
+from qala_processor import ImagePreprocessor, TileGenerator
 preprocessor = ImagePreprocessor(8192, 8192)
 tile_gen = TileGenerator(1024, overlap=128)
 
 # Detection
-from utils import YOLODetector
+from qala_processor import YOLODetector
 detector = YOLODetector("model.pt", conf_threshold=0.25)
 detections = detector.detect_tiles(tiles, batch_size=16)
 
 # Postprocessing
-from utils import DetectionPostprocessor, QanatClusterer
+from qala_processor import DetectionPostprocessor, QalaPipeline
 postprocessor = DetectionPostprocessor(iou_threshold=0.5)
-clusterer = QanatClusterer(eps=100, min_samples=3)
+clusterer = QalaPipeline(eps=100, min_samples=3)
 
 # Geospatial
-from utils import GeospatialUtils
+from qala_processor import GeospatialUtils
 bbox = GeospatialUtils.get_image_bbox("image.tif")
 coords = GeospatialUtils.pixel_to_geo_coords(pixels, geotransform)
 
 # Visualization
-from utils import ResultVisualizer
+from qala_processor import ResultVisualizer
 visualizer = ResultVisualizer()
 map_obj = visualizer.visualize_clusters("image.tif", gdf)
 ```
@@ -160,7 +160,7 @@ python run_detection.py -b 89.3 42.7 89.4 42.8 -m model.pt --zoom 18
 # Your custom parameters
 tile_gen = TileGenerator(tile_size=2048, overlap=256)
 detector = YOLODetector("model.pt", conf_threshold=0.30)
-clusterer = QanatClusterer(eps=80, min_samples=5)
+clusterer = QalaPipeline(eps=80, min_samples=5)
 ```
 
 ## Troubleshooting

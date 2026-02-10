@@ -87,7 +87,7 @@ INPUT                 PROCESSING                      OUTPUT
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         utils/ PACKAGE                           │
+│                         qala_processor/ PACKAGE                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌────────────────┐    ┌────────────────┐    ┌──────────────┐ │
@@ -383,7 +383,7 @@ DetectionPostprocessor
 ├── _non_maximum_suppression()
 └── boxes_to_centroids()
 
-QanatClusterer
+QalaPipeline
 ├── eps
 ├── min_samples
 ├── cluster_shafts()

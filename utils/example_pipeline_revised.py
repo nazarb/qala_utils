@@ -19,14 +19,14 @@ from pathlib import Path
 from osgeo import gdal
 
 # Import all utilities
-from utils import (
+from qala_processor import (
     ImageDownloader,
     ImageLoader,
     ImagePreprocessor,
     TileGenerator,
     YOLODetector,
     DetectionPostprocessor,
-    QanatClusterer,
+    QalaPipeline,
     GeospatialUtils,
     ResultVisualizer
 )
@@ -243,7 +243,7 @@ def run_qanat_detection_pipeline(
     logger.info("STEP 8: Clustering into Qanat Systems")
     logger.info("=" * 60)
     
-    clusterer = QanatClusterer(
+    clusterer = QalaPipeline(
         eps=100.0,
         min_samples=3,
         min_shaft_distance=10.0,

@@ -83,9 +83,9 @@ python run_detection.py \
 
 #### Basic Example
 ```python
-from utils import (
+from qala_processor import (
     ImageLoader, TileGenerator, YOLODetector,
-    DetectionPostprocessor, QanatClusterer
+    DetectionPostprocessor, QalaPipeline
 )
 
 # 1. Load image
@@ -104,7 +104,7 @@ detections = detector.detect_tiles(tile_info)
 postprocessor = DetectionPostprocessor()
 merged = postprocessor.merge_tile_detections(detections, image.shape[:2])
 
-clusterer = QanatClusterer()
+clusterer = QalaPipeline()
 centroids = postprocessor.boxes_to_centroids(merged['boxes'])
 labels = clusterer.cluster_shafts(centroids)
 
@@ -181,10 +181,10 @@ for image_path in image_paths:
 ### 2. Custom Clustering Parameters
 
 ```python
-from utils import QanatClusterer
+from qala_processor import QalaPipeline
 
 # For closely-spaced qanats
-clusterer = QanatClusterer(
+clusterer = QalaPipeline(
     eps=50.0,              # Smaller search radius
     min_samples=5,         # More shafts required
     min_shaft_distance=15.0,
@@ -192,7 +192,7 @@ clusterer = QanatClusterer(
 )
 
 # For widely-spaced qanats
-clusterer = QanatClusterer(
+clusterer = QalaPipeline(
     eps=200.0,             # Larger search radius
     min_samples=3,         # Fewer shafts required
     min_shaft_distance=20.0,
@@ -205,7 +205,7 @@ clusterer = QanatClusterer(
 Process the same image at different resolutions:
 
 ```python
-from utils import ImagePreprocessor
+from qala_processor import ImagePreprocessor
 
 preprocessor = ImagePreprocessor()
 
@@ -225,7 +225,7 @@ for scale in scales:
 ### 4. Region of Interest Processing
 
 ```python
-from utils import GeospatialUtils
+from qala_processor import GeospatialUtils
 
 # Define ROI
 roi_bbox = (89.30, 42.70, 89.35, 42.75)  # (minx, miny, maxx, maxy)
@@ -245,7 +245,7 @@ clipped_path = GeospatialUtils.clip_raster_to_bbox(
 ### 5. Batch Download and Process
 
 ```python
-from utils import ImageDownloader
+from qala_processor import ImageDownloader
 
 downloader = ImageDownloader(output_dir="downloads/")
 
@@ -354,7 +354,7 @@ python -m http.server 8000
 ### Creating Custom Visualizations
 
 ```python
-from utils import ResultVisualizer
+from qala_processor import ResultVisualizer
 
 visualizer = ResultVisualizer(basemap="Google Satellite")
 

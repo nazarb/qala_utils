@@ -18,11 +18,11 @@ import logging
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add parent directory to path (for running as script: python run_detection.py)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from example_pipeline import run_qanat_detection_pipeline
-from config import (
+from qala_processor.example_pipeline import run_qanat_detection_pipeline
+from qala_processor.config import (
     get_config_for_scenario,
     LOGGING_CONFIG,
     RESULTS_DIR
