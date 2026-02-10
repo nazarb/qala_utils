@@ -958,65 +958,127 @@ class QalaPipeline:
         )
         
         logger.info(f"Total detections: {len(gdf_all)}")
+        
+        # Normalize class column to strings (model may return 0, "0", etc.)
+        gdf_all['class'] = gdf_all['class'].astype(str)
         logger.info(f"Classes: {gdf_all['class'].value_counts().to_dict()}")
         
-        # Step 2: Separate classes
-        logger.info("\nStep 2: Separating qanat and qanat_pair classes")
-        gdf_qanat = gdf_all[gdf_all['class'] == 'qanat'].copy()
-        gdf_qanat_pair = gdf_all[gdf_all['class'] == 'qanat_pair'].copy()
+        # Detect single-class vs two-class pipeline
+        unique_classes = gdf_all['class'].unique().tolist()
+        has_qanat_pair = 'qanat_pair' in unique_classes or 'qala_pair' in unique_classes
+        has_qanat = 'qanat' in unique_classes
+        has_qala = 'qala' in unique_classes
         
-        logger.info(f"Qanat: {len(gdf_qanat)}, Qanat_pair: {len(gdf_qanat_pair)}")
+        # Determine primary class name
+        if has_qala:
+            primary_class = 'qala'
+        elif has_qanat:
+            primary_class = 'qanat'
+        else:
+            # Use first class found (model may return "0", "1", etc. for single-class)
+            primary_class = str(unique_classes[0]) if len(unique_classes) > 0 else 'qala'
         
-        if len(gdf_qanat) == 0:
-            logger.warning("No qanat detections found!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+        # Step 2: Handle single-class or two-class pipeline
+        if not has_qanat_pair:
+            # Single-class pipeline (qala only or model's single class)
+            logger.info(f"\nStep 2: Single-class pipeline - processing '{primary_class}' detections")
+            gdf_primary = gdf_all[gdf_all['class'] == primary_class].copy()
+            
+            # If no match (e.g. model returns "0" but we looked for "qala"), use ALL detections
+            if len(gdf_primary) == 0 and len(gdf_all) > 0:
+                logger.info(f"No '{primary_class}' class found. Using all {len(gdf_all)} detections as single class.")
+                gdf_primary = gdf_all.copy()
+                gdf_primary['class'] = 'qala'  # Normalize to qala for downstream
+                primary_class = 'qala'
+            
+            if len(gdf_primary) == 0:
+                logger.warning(f"No detections found!")
+                return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+            
+            # Step 3: Dissolve overlapping geometries
+            logger.info(f"\nStep 3: Dissolving overlapping {primary_class} geometries")
+            gdf_dissolved = self.dissolve_overlapping_bboxes(
+                gdf_primary,
+                primary_class,
+                overlap_threshold=self.overlap_threshold
+            )
+            
+            # Step 4: Filter by confidence
+            logger.info("\nStep 4: Filtering by confidence")
+            gdf_filtered = self.filter_by_confidence(
+                gdf_dissolved,
+                self.min_confidence_qala
+            )
+            
+            if len(gdf_filtered) == 0:
+                logger.warning(f"No {primary_class} detections after confidence filtering!")
+                return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+            
+            logger.info("=" * 60)
+            logger.info(f"FINAL RESULT: {len(gdf_filtered)} {primary_class} detections")
+            logger.info("=" * 60)
+            
+            return gdf_filtered
         
-        if len(gdf_qanat_pair) == 0:
-            logger.warning("No qanat_pair detections found!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
-        
-        # Step 3: Dissolve overlapping qanat bboxes
-        logger.info("\nStep 3: Dissolving overlapping qanat bboxes")
-        gdf_qanat_dissolved = self.dissolve_overlapping_bboxes(
-            gdf_qanat, 
-            'qanat',
-            overlap_threshold=self.overlap_threshold
-        )
-        
-        # Step 4: Keep qanat_pair as-is (no dissolving)
-        logger.info("\nStep 4: Keeping qanat_pair bboxes as-is")
-        
-        # Step 5: Filter by confidence
-        logger.info("\nStep 5: Filtering by confidence")
-        gdf_qanat_filtered = self.filter_by_confidence(
-            gdf_qanat_dissolved,
-            self.min_confidence_qala
-        )
-        gdf_qanat_pair_filtered = self.filter_by_confidence(
-            gdf_qanat_pair,
-            self.min_confidence_qala_pair
-        )
-        
-        if len(gdf_qanat_filtered) == 0:
-            logger.warning("No qanats after confidence filtering!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
-        
-        # Step 6: Spatial join
-        logger.info("\nStep 6: Spatial join - keeping qanats within qanat_pairs")
-        gdf_qanat_within = self.spatial_join_qanat_pairs(
-            gdf_qanat_filtered,
-            gdf_qanat_pair_filtered
-        )
-        
-        if len(gdf_qanat_within) == 0:
-            logger.warning("No qanats within qanat_pairs after spatial join!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
-        
-        logger.info("=" * 60)
-        logger.info(f"FINAL RESULT: {len(gdf_qanat_within)} qanat detections")
-        logger.info("=" * 60)
-        
-        return gdf_qanat_within
+        else:
+            # Two-class pipeline (qanat/qala + qanat_pair/qala_pair)
+            logger.info("\nStep 2: Two-class pipeline - separating primary and pair classes")
+            gdf_primary = gdf_all[gdf_all['class'] == primary_class].copy()
+            pair_class = 'qanat_pair' if 'qanat_pair' in unique_classes else 'qala_pair'
+            gdf_pair = gdf_all[gdf_all['class'] == pair_class].copy()
+            
+            logger.info(f"{primary_class}: {len(gdf_primary)}, {pair_class}: {len(gdf_pair)}")
+            
+            if len(gdf_primary) == 0:
+                logger.warning(f"No {primary_class} detections found!")
+                return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+            
+            if len(gdf_pair) == 0:
+                logger.warning(f"No {pair_class} detections found!")
+                return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+            
+            # Step 3: Dissolve overlapping primary class bboxes
+            logger.info(f"\nStep 3: Dissolving overlapping {primary_class} bboxes")
+            gdf_primary_dissolved = self.dissolve_overlapping_bboxes(
+                gdf_primary,
+                primary_class,
+                overlap_threshold=self.overlap_threshold
+            )
+            
+            # Step 4: Keep pair class as-is (no dissolving)
+            logger.info(f"\nStep 4: Keeping {pair_class} bboxes as-is")
+            
+            # Step 5: Filter by confidence
+            logger.info("\nStep 5: Filtering by confidence")
+            gdf_primary_filtered = self.filter_by_confidence(
+                gdf_primary_dissolved,
+                self.min_confidence_qala
+            )
+            gdf_pair_filtered = self.filter_by_confidence(
+                gdf_pair,
+                self.min_confidence_qala_pair
+            )
+            
+            if len(gdf_primary_filtered) == 0:
+                logger.warning(f"No {primary_class} detections after confidence filtering!")
+                return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+            
+            # Step 6: Spatial join
+            logger.info(f"\nStep 6: Spatial join - keeping {primary_class} within {pair_class}")
+            gdf_within = self.spatial_join_qanat_pairs(
+                gdf_primary_filtered,
+                gdf_pair_filtered
+            )
+            
+            if len(gdf_within) == 0:
+                logger.warning(f"No {primary_class} within {pair_class} after spatial join!")
+                return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+            
+            logger.info("=" * 60)
+            logger.info(f"FINAL RESULT: {len(gdf_within)} {primary_class} detections")
+            logger.info("=" * 60)
+            
+            return gdf_within
     
     def export_results(
         self,
