@@ -288,7 +288,7 @@ class QalaPipeline:
         eps: float = 0.0008,  # DBSCAN epsilon in geographic degrees (deprecated, kept for compatibility)
         min_samples: int = 4,  # Minimum points per cluster (deprecated, kept for compatibility)
         min_confidence_qala: float = 0.1,  # Minimum confidence for qala class
-        min_confidence_qala_pair: float = 0.2,  # Minimum confidence for qala_pair class
+        min_confidence_qala_pair: float = None,  # Minimum confidence for qala_pair class (only for two-class pipeline)
         overlap_threshold: float = 0.9  # Minimum overlap ratio to merge geometries (90%)
     ):
         """
@@ -298,16 +298,16 @@ class QalaPipeline:
             eps: DBSCAN epsilon parameter (deprecated, kept for backward compatibility)
             min_samples: DBSCAN minimum samples (deprecated, kept for backward compatibility)
             min_confidence_qala: Minimum confidence for qala detections (default: 0.1)
-            min_confidence_qala_pair: Minimum confidence for qala_pair detections (default: 0.2)
+            min_confidence_qala_pair: Minimum confidence for qala_pair detections (default: None, only used in two-class pipeline)
             overlap_threshold: Minimum overlap ratio (0.0-1.0) to merge geometries (default: 0.9 = 90%)
         """
         self.eps = eps
         self.min_samples = min_samples
         self.min_confidence_qala = min_confidence_qala
-        self.min_confidence_qala_pair = min_confidence_qala_pair
+        self.min_confidence_qala_pair = min_confidence_qala_pair if min_confidence_qala_pair is not None else min_confidence_qala
         self.overlap_threshold = overlap_threshold
         
-        logger.info(f"QalaPipeline initialized: overlap_threshold={overlap_threshold*100}%")
+        logger.info(f"QalaPipeline initialized: min_confidence_qala={min_confidence_qala}, overlap_threshold={overlap_threshold*100}%")
     
     def masks_to_geodataframe(
         self,
