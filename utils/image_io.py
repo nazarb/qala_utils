@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Optional, Tuple
 import numpy as np
 from osgeo import gdal
-from samgeo import download_file, tms_to_geotiff
+from samgeo import download_file
+try:
+    from samgeo import tms_to_geotiff
+except ImportError:
+    from samgeo.common import tms_to_geotiff
 
 logger = logging.getLogger(__name__)
 
