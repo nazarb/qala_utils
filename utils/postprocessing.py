@@ -11,6 +11,14 @@ from shapely.geometry import Point
 from sklearn.cluster import DBSCAN
 from scipy.spatial import distance_matrix
 
+try:
+    from scipy import ndimage
+    from skimage import measure
+except ImportError:
+    ndimage = None
+    measure = None
+    logger.warning("scipy or skimage not available. Binary mask conversion may not work.")
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,9 +103,11 @@ class DetectionPostprocessor:
             Merged detection dictionary
         """
         all_boxes = []
+        all_masks = []  # Store masks for instance segmentation
         all_confidences = []
         all_class_ids = []
         all_class_names = []
+        all_tile_offsets = []  # Store tile offsets for mask transformation
         
         # Map tile detections to original image coordinates
         for detection in tile_detections:
@@ -109,16 +119,25 @@ class DetectionPostprocessor:
             # Get boxes: use boxes if present, else extract from masks (instance segmentation)
             class_ids = np.asarray(detection['class_ids'])
             confidences = np.asarray(detection['confidences'])
+            has_masks = 'masks' in detection and len(detection['masks']) > 0
+            
             if 'boxes' in detection and len(detection['boxes']) > 0:
                 boxes = np.asarray(detection['boxes']).copy()
                 if boxes.ndim == 1:
                     boxes = boxes.reshape(1, -1)
-            elif 'masks' in detection and len(detection['masks']) > 0:
+                # Store masks if available (for instance segmentation)
+                if has_masks:
+                    all_masks.extend(detection['masks'])
+                    all_tile_offsets.extend([(tile_info['x_start'], tile_info['y_start'])] * len(detection['masks']))
+            elif has_masks:
                 boxes, confidences, class_ids = self._boxes_from_masks(
                     detection['masks'], confidences, class_ids
                 )
                 if len(boxes) == 0:
                     continue
+                # Store masks with tile offsets
+                all_masks.extend(detection['masks'])
+                all_tile_offsets.extend([(tile_info['x_start'], tile_info['y_start'])] * len(detection['masks']))
             else:
                 continue
             
@@ -170,6 +189,11 @@ class DetectionPostprocessor:
             'class_ids': class_ids[keep_indices],
             'class_names': [all_class_names[i] for i in keep_indices]
         }
+        
+        # Include masks if available (for instance segmentation)
+        if len(all_masks) > 0 and len(all_masks) == len(boxes):
+            merged['masks'] = [all_masks[i] for i in keep_indices]
+            merged['tile_offsets'] = [all_tile_offsets[i] for i in keep_indices]
         
         logger.info(f"Merged {len(boxes)} detections to {len(keep_indices)} after NMS")
         
@@ -257,33 +281,165 @@ class DetectionPostprocessor:
 
 
 class QalaPipeline:
-    """Cluster detected shafts into qanat systems using spatial join approach."""
+    """Process detected qanats using spatial join approach (without clustering)."""
     
     def __init__(
         self,
-        eps: float = 0.0008,  # DBSCAN epsilon in geographic degrees
-        min_samples: int = 4,  # Minimum points per cluster
-        min_confidence_qanat: int = 10,  # Minimum confidence for qanat class
-        min_confidence_qanat_pair: int = 10,  # Minimum confidence for qanat_pair class
-        overlap_threshold: float = 0.9  # Minimum overlap ratio to merge bboxes (90%)
+        eps: float = 0.0008,  # DBSCAN epsilon in geographic degrees (deprecated, kept for compatibility)
+        min_samples: int = 4,  # Minimum points per cluster (deprecated, kept for compatibility)
+        min_confidence_qala: float = 0.1,  # Minimum confidence for qala class
+        min_confidence_qala_pair: float = 0.2,  # Minimum confidence for qala_pair class
+        overlap_threshold: float = 0.9  # Minimum overlap ratio to merge geometries (90%)
     ):
         """
-        Initialize QalaPipeline with original pipeline parameters.
+        Initialize QalaPipeline with processing parameters.
         
         Args:
-            eps: DBSCAN epsilon parameter in geographic degrees (default: 0.0008)
-            min_samples: DBSCAN minimum samples per cluster (default: 4)
-            min_confidence_qanat: Minimum confidence for qanat detections
-            min_confidence_qanat_pair: Minimum confidence for qanat_pair detections
-            overlap_threshold: Minimum overlap ratio (0.0-1.0) to merge bboxes (default: 0.9 = 90%)
+            eps: DBSCAN epsilon parameter (deprecated, kept for backward compatibility)
+            min_samples: DBSCAN minimum samples (deprecated, kept for backward compatibility)
+            min_confidence_qala: Minimum confidence for qala detections (default: 0.1)
+            min_confidence_qala_pair: Minimum confidence for qala_pair detections (default: 0.2)
+            overlap_threshold: Minimum overlap ratio (0.0-1.0) to merge geometries (default: 0.9 = 90%)
         """
         self.eps = eps
         self.min_samples = min_samples
-        self.min_confidence_qanat = min_confidence_qanat
-        self.min_confidence_qanat_pair = min_confidence_qanat_pair
+        self.min_confidence_qala = min_confidence_qala
+        self.min_confidence_qala_pair = min_confidence_qala_pair
         self.overlap_threshold = overlap_threshold
         
-        logger.info(f"QalaPipeline initialized: eps={eps}, min_samples={min_samples}, overlap_threshold={overlap_threshold*100}%")
+        logger.info(f"QalaPipeline initialized: overlap_threshold={overlap_threshold*100}%")
+    
+    def masks_to_geodataframe(
+        self,
+        masks: List,
+        confidences: np.ndarray,
+        class_ids: np.ndarray,
+        class_names: List[str],
+        reference_geotransform: Tuple[float, ...],
+        tile_offsets: List[Tuple[int, int]] = None,
+        crs: str = "EPSG:4326"
+    ) -> gpd.GeoDataFrame:
+        """
+        Convert instance segmentation masks to GeoDataFrame with polygon geometries.
+        
+        Args:
+            masks: List of mask arrays (polygon format (N, 2) or binary masks (H, W))
+            confidences: Detection confidences (N,)
+            class_ids: Class IDs (N,)
+            class_names: List of class names
+            reference_geotransform: Geotransform from clipped reference image
+            tile_offsets: Optional list of (x_offset, y_offset) for each mask (if masks are in tile coordinates)
+            crs: Target CRS
+            
+        Returns:
+            GeoDataFrame with polygon geometries from masks
+        """
+        from shapely.geometry import Polygon
+        
+        if measure is None:
+            raise ImportError("skimage.measure is required for binary mask conversion. Install with: pip install scikit-image")
+        
+        if len(masks) == 0:
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+        
+        geometries = []
+        valid_confidences = []
+        valid_class_ids = []
+        valid_class_names = []
+        
+        for i, mask in enumerate(masks):
+            mask = np.asarray(mask)
+            
+            # Handle polygon format (N, 2) - direct polygon coordinates
+            if mask.ndim == 2 and mask.shape[1] == 2:
+                # Polygon format: (N, 2) array of (x, y) coordinates
+                if len(mask) < 3:  # Need at least 3 points for a polygon
+                    continue
+                
+                # Apply tile offset if provided
+                if tile_offsets and i < len(tile_offsets):
+                    x_offset, y_offset = tile_offsets[i]
+                    mask = mask.copy()
+                    mask[:, 0] += x_offset
+                    mask[:, 1] += y_offset
+                
+                # Transform polygon coordinates to geographic
+                coords_geo = []
+                for x, y in mask:
+                    x_geo = reference_geotransform[0] + x * reference_geotransform[1] + y * reference_geotransform[2]
+                    y_geo = reference_geotransform[3] + x * reference_geotransform[4] + y * reference_geotransform[5]
+                    coords_geo.append((x_geo, y_geo))
+                
+                # Close polygon if not closed
+                if coords_geo[0] != coords_geo[-1]:
+                    coords_geo.append(coords_geo[0])
+                
+                try:
+                    geom = Polygon(coords_geo)
+                    if geom.is_valid and geom.area > 0:
+                        geometries.append(geom)
+                        valid_confidences.append(confidences[i] if i < len(confidences) else 0.0)
+                        valid_class_ids.append(class_ids[i] if i < len(class_ids) else 0)
+                        valid_class_names.append(class_names[i] if i < len(class_names) else 'qala')
+                except:
+                    continue
+            
+            # Handle binary mask format (H, W)
+            elif mask.ndim == 2:
+                # Binary mask: convert to polygon using contour detection
+                try:
+                    # Find contours
+                    contours = measure.find_contours(mask, 0.5)
+                    if len(contours) == 0:
+                        continue
+                    
+                    # Use largest contour
+                    largest_contour = max(contours, key=len)
+                    if len(largest_contour) < 3:
+                        continue
+                    
+                    # Apply tile offset if provided
+                    if tile_offsets and i < len(tile_offsets):
+                        x_offset, y_offset = tile_offsets[i]
+                        largest_contour = largest_contour.copy()
+                        largest_contour[:, 1] += x_offset  # x coordinate (column)
+                        largest_contour[:, 0] += y_offset  # y coordinate (row)
+                    
+                    # Transform to geographic coordinates
+                    coords_geo = []
+                    for y, x in largest_contour:  # Note: contours are (row, col) = (y, x)
+                        x_geo = reference_geotransform[0] + x * reference_geotransform[1] + y * reference_geotransform[2]
+                        y_geo = reference_geotransform[3] + x * reference_geotransform[4] + y * reference_geotransform[5]
+                        coords_geo.append((x_geo, y_geo))
+                    
+                    # Close polygon
+                    if coords_geo[0] != coords_geo[-1]:
+                        coords_geo.append(coords_geo[0])
+                    
+                    geom = Polygon(coords_geo)
+                    if geom.is_valid and geom.area > 0:
+                        geometries.append(geom)
+                        valid_confidences.append(confidences[i] if i < len(confidences) else 0.0)
+                        valid_class_ids.append(class_ids[i] if i < len(class_ids) else 0)
+                        valid_class_names.append(class_names[i] if i < len(class_names) else 'qala')
+                except Exception as e:
+                    logger.debug(f"Failed to convert binary mask {i} to polygon: {e}")
+                    continue
+        
+        if len(geometries) == 0:
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+        
+        # Create GeoDataFrame
+        gdf = gpd.GeoDataFrame({
+            'geometry': geometries,
+            'class': valid_class_names,
+            'confidence': valid_confidences,
+            'class_id': valid_class_ids
+        }, crs=crs)
+        
+        logger.info(f"Created GeoDataFrame with {len(gdf)} mask geometries")
+        
+        return gdf
     
     def boxes_to_geodataframe(
         self,
@@ -343,6 +499,114 @@ class QalaPipeline:
         logger.info(f"Created GeoDataFrame with {len(gdf)} detections")
         
         return gdf
+    
+    def dissolve_overlapping_masks(
+        self,
+        gdf: gpd.GeoDataFrame,
+        class_filter: str,
+        overlap_threshold: float = 0.9
+    ) -> gpd.GeoDataFrame:
+        """
+        Dissolve overlapping mask geometries, keeping max confidence.
+        Merges overlapping geometries by union, keeping the geometry with highest confidence.
+        Only merges geometries that overlap by at least overlap_threshold (default 90%).
+        
+        Args:
+            gdf: GeoDataFrame with polygon geometries (from masks)
+            class_filter: Class name to filter (e.g., 'qala')
+            overlap_threshold: Minimum overlap ratio to merge (0.0-1.0, default: 0.9)
+            
+        Returns:
+            GeoDataFrame with dissolved overlapping masks
+        """
+        # Filter by class
+        gdf_class = gdf[gdf['class'] == class_filter].copy()
+        
+        if len(gdf_class) == 0:
+            logger.warning(f"No detections of class '{class_filter}'")
+            return gdf_class
+        
+        # Reset index
+        gdf_class = gdf_class.reset_index(drop=True)
+        
+        logger.info(f"Dissolving {len(gdf_class)} {class_filter} masks (overlap threshold: {overlap_threshold*100}%)")
+        
+        # Create spatial index
+        gdf_class.sindex
+        
+        # Find overlapping geometries
+        dissolved = []
+        processed = set()
+        
+        for idx in range(len(gdf_class)):
+            if idx in processed:
+                continue
+            
+            row = gdf_class.iloc[idx]
+            
+            # Find all geometries that intersect with this one
+            candidates = list(gdf_class.sindex.intersection(row.geometry.bounds))
+            
+            # Filter candidates by overlap ratio
+            overlapping_indices = []
+            for i in candidates:
+                if i == idx:
+                    continue
+                    
+                candidate_geom = gdf_class.iloc[i].geometry
+                
+                # Calculate overlap ratio (intersection area / smaller area)
+                intersection = row.geometry.intersection(candidate_geom)
+                intersection_area = intersection.area
+                
+                area1 = row.geometry.area
+                area2 = candidate_geom.area
+                smaller_area = min(area1, area2)
+                
+                if smaller_area > 0:
+                    overlap_ratio = intersection_area / smaller_area
+                    
+                    # Only consider as overlapping if ratio exceeds threshold
+                    if overlap_ratio >= overlap_threshold:
+                        overlapping_indices.append(i)
+            
+            if len(overlapping_indices) == 0:
+                # No overlaps above threshold, keep as is
+                dissolved.append({
+                    'geometry': row.geometry,
+                    'class': row['class'],
+                    'confidence': row['confidence'],
+                    'class_id': row['class_id']
+                })
+                processed.add(idx)
+            else:
+                # Merge overlapping geometries
+                overlapping_indices.append(idx)
+                overlapping = gdf_class.iloc[overlapping_indices]
+                
+                # Union geometries (merge masks)
+                merged_geom = overlapping.geometry.unary_union
+                
+                # Keep max confidence
+                max_conf = overlapping['confidence'].max()
+                max_conf_idx = overlapping['confidence'].idxmax()
+                max_class_id = overlapping.loc[max_conf_idx, 'class_id']
+                
+                dissolved.append({
+                    'geometry': merged_geom,  # Actual merged geometry, not envelope
+                    'class': class_filter,
+                    'confidence': max_conf,
+                    'class_id': max_class_id
+                })
+                
+                # Mark all as processed
+                processed.update(overlapping_indices)
+        
+        result = gpd.GeoDataFrame(dissolved, crs=gdf.crs)
+        logger.info(f"Dissolved to {len(result)} masks (from {len(gdf_class)})")
+        logger.info(f"Merged {len(gdf_class) - len(result)} masks with >{overlap_threshold*100}% overlap")
+        
+        return result
     
     def dissolve_overlapping_bboxes(
         self,
@@ -495,7 +759,7 @@ class QalaPipeline:
     def filter_by_confidence(
         self,
         gdf: gpd.GeoDataFrame,
-        min_confidence: int
+        min_confidence: float
     ) -> gpd.GeoDataFrame:
         """
         Filter detections by minimum confidence.
@@ -567,6 +831,82 @@ class QalaPipeline:
         
         return filtered
     
+    def process_instance_segmentation(
+        self,
+        merged_detections: Dict,
+        reference_geotransform: Tuple[float, ...],
+        class_name: str = "qala",
+        crs: str = "EPSG:4326"
+    ) -> gpd.GeoDataFrame:
+        """
+        Process instance segmentation detections with single class.
+        
+        Pipeline:
+        1. Convert masks to GeoDataFrame with polygon geometries
+        2. Filter by confidence threshold
+        3. Dissolve overlapping masks (keep max confidence)
+        
+        Args:
+            merged_detections: Dictionary with detection results (must include 'masks')
+            reference_geotransform: Geotransform from clipped reference image
+            class_name: Class name (default: "qala")
+            crs: Target CRS
+            
+        Returns:
+            Final GeoDataFrame with merged mask geometries
+        """
+        logger.info("=" * 60)
+        logger.info("INSTANCE SEGMENTATION PROCESSING PIPELINE")
+        logger.info("=" * 60)
+        
+        # Check if masks are available
+        if 'masks' not in merged_detections or len(merged_detections['masks']) == 0:
+            logger.warning("No masks found in detections! Falling back to bounding boxes.")
+            return self.process_detections(merged_detections, reference_geotransform, crs)
+        
+        # Step 1: Convert masks to GeoDataFrame
+        logger.info("Step 1: Converting masks to GeoDataFrame")
+        gdf = self.masks_to_geodataframe(
+            merged_detections['masks'],
+            merged_detections['confidences'],
+            merged_detections['class_ids'],
+            merged_detections['class_names'],
+            reference_geotransform,
+            tile_offsets=merged_detections.get('tile_offsets'),
+            crs=crs
+        )
+        
+        logger.info(f"Total mask geometries: {len(gdf)}")
+        
+        if len(gdf) == 0:
+            logger.warning("No valid mask geometries found!")
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+        
+        # Step 2: Filter by confidence
+        logger.info("\nStep 2: Filtering by confidence")
+        gdf_filtered = self.filter_by_confidence(
+            gdf,
+            self.min_confidence_qala
+        )
+        
+        if len(gdf_filtered) == 0:
+            logger.warning("No masks after confidence filtering!")
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
+        
+        # Step 3: Dissolve overlapping masks
+        logger.info("\nStep 3: Dissolving overlapping masks")
+        gdf_merged = self.dissolve_overlapping_masks(
+            gdf_filtered,
+            class_name,
+            overlap_threshold=self.overlap_threshold
+        )
+        
+        logger.info("=" * 60)
+        logger.info(f"FINAL RESULT: {len(gdf_merged)} merged mask geometries")
+        logger.info("=" * 60)
+        
+        return gdf_merged
+    
     def process_detections(
         self,
         merged_detections: Dict,
@@ -583,8 +923,6 @@ class QalaPipeline:
         4. Keep qanat_pair bboxes as-is
         5. Filter by confidence thresholds
         6. Spatial join: keep qanats within qanat_pairs
-        7. DBSCAN clustering
-        8. Remove outliers
         
         Args:
             merged_detections: Dictionary with detection results
@@ -592,8 +930,18 @@ class QalaPipeline:
             crs: Target CRS
             
         Returns:
-            Final GeoDataFrame with clustered qanats
+            Final GeoDataFrame with filtered qanats
         """
+        # Check if this is instance segmentation (has masks)
+        if 'masks' in merged_detections and len(merged_detections['masks']) > 0:
+            # Use instance segmentation pipeline
+            return self.process_instance_segmentation(
+                merged_detections,
+                reference_geotransform,
+                class_name=merged_detections.get('class_names', ['qala'])[0] if merged_detections.get('class_names') else 'qala',
+                crs=crs
+            )
+        
         logger.info("=" * 60)
         logger.info("QANAT DETECTION PROCESSING PIPELINE")
         logger.info("=" * 60)
@@ -621,11 +969,11 @@ class QalaPipeline:
         
         if len(gdf_qanat) == 0:
             logger.warning("No qanat detections found!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence', 'cluster'], crs=crs)
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
         
         if len(gdf_qanat_pair) == 0:
             logger.warning("No qanat_pair detections found!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence', 'cluster'], crs=crs)
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
         
         # Step 3: Dissolve overlapping qanat bboxes
         logger.info("\nStep 3: Dissolving overlapping qanat bboxes")
@@ -642,16 +990,16 @@ class QalaPipeline:
         logger.info("\nStep 5: Filtering by confidence")
         gdf_qanat_filtered = self.filter_by_confidence(
             gdf_qanat_dissolved,
-            self.min_confidence_qanat
+            self.min_confidence_qala
         )
         gdf_qanat_pair_filtered = self.filter_by_confidence(
             gdf_qanat_pair,
-            self.min_confidence_qanat_pair
+            self.min_confidence_qala_pair
         )
         
         if len(gdf_qanat_filtered) == 0:
             logger.warning("No qanats after confidence filtering!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence', 'cluster'], crs=crs)
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
         
         # Step 6: Spatial join
         logger.info("\nStep 6: Spatial join - keeping qanats within qanat_pairs")
@@ -662,22 +1010,13 @@ class QalaPipeline:
         
         if len(gdf_qanat_within) == 0:
             logger.warning("No qanats within qanat_pairs after spatial join!")
-            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence', 'cluster'], crs=crs)
-        
-        # Step 7: DBSCAN clustering
-        logger.info("\nStep 7: DBSCAN clustering")
-        gdf_clustered = self.cluster_with_dbscan(gdf_qanat_within)
-        
-        # Step 8: Remove outliers
-        logger.info("\nStep 8: Removing outliers")
-        gdf_final = self.remove_outliers(gdf_clustered)
+            return gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence'], crs=crs)
         
         logger.info("=" * 60)
-        logger.info(f"FINAL RESULT: {len(gdf_final)} qanat detections in clusters")
-        logger.info(f"Number of clusters: {gdf_final['cluster'].nunique()}")
+        logger.info(f"FINAL RESULT: {len(gdf_qanat_within)} qanat detections")
         logger.info("=" * 60)
         
-        return gdf_final
+        return gdf_qanat_within
     
     def export_results(
         self,
