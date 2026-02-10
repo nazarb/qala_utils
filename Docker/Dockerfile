@@ -1,0 +1,52 @@
+# Use NVIDIA's CUDA-enabled base image for GPU support
+FROM nvidia/cuda:11.7.1-cudnn8-devel-ubuntu22.04
+
+RUN ln -snf /usr/share/zoneinfo/$CONTAINER_TIMEZONE /etc/localtime && echo $CONTAINER_TIMEZONE > /etc/timezone
+
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y python3-pip megatools libgl1-mesa-glx gdal-bin python3-gdal && \
+    pip3 install --upgrade pip
+
+# Install Jupyter Lab
+RUN pip install jupyterlab && \
+    pip install notebook
+
+# Install Python dependencies directly in the Dockerfile
+RUN pip install --no-cache-dir \
+    gitpython \
+    ipython \
+    matplotlib>=3.2.2 \
+    'numpy>=1.18.5,<2.0' \
+    opencv-python>=4.1.1 \
+    Pillow>=7.1.2 \
+    psutil \
+    PyYAML>=5.3.1 \
+    requests>=2.23.0 \
+    scipy>=1.4.1 \
+    thop>=0.1.1 \
+    torch>=1.7.0 \
+    torchvision>=0.8.1 \
+    tqdm>=4.64.0 \
+    tensorboard>=2.4.1 \
+    pandas>=1.1.4 \
+    seaborn>=0.11.0 \
+    albumentations>=1.0.3 \
+    pycocotools>=2.0 \
+    tiffile \
+    rasterio \
+    megatools \
+    "leafmap[raster]" \
+    fiona \
+    GDAL \
+    segment-geospatial[samgeo2] \
+    scikit-learn
+
+# Set the working directory
+WORKDIR /home/nazar/2024_JAS_qanats/
+
+# Expose the necessary ports
+EXPOSE 8877 9433
+
+# Set the default command to run your app (adjust as needed)
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8877", "--no-browser", "--allow-root"]
