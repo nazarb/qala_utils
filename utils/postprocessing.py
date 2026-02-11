@@ -11,6 +11,8 @@ from shapely.geometry import Point
 from sklearn.cluster import DBSCAN
 from scipy.spatial import distance_matrix
 
+logger = logging.getLogger(__name__)
+
 try:
     from scipy import ndimage
     from skimage import measure
@@ -19,7 +21,6 @@ except ImportError:
     measure = None
     logger.warning("scipy or skimage not available. Binary mask conversion may not work.")
 
-logger = logging.getLogger(__name__)
 
 
 class DetectionPostprocessor:
@@ -1232,4 +1233,5 @@ class QalaPipeline:
         Returns:
             Path to saved file
         """
+
         return self.export_results(gdf, output_path, driver, include_centroids)
