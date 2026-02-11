@@ -199,6 +199,72 @@ class DetectionPostprocessor:
         
         return merged
     
+    def save_merged_detections(
+        self,
+        merged_detections: Dict,
+        reference_geotransform: Tuple[float, ...],
+        output_path: str,
+        crs: str = "EPSG:4326",
+        driver: str = "GPKG"
+    ) -> str:
+        """
+        Save merged detections (before processing) to GeoPackage.
+        
+        Args:
+            merged_detections: Merged detection dictionary from merge_tile_detections()
+            reference_geotransform: Geotransform from clipped reference image
+            output_path: Output file path
+            crs: Target CRS
+            driver: GDAL driver name ('GPKG', 'GeoJSON', 'ESRI Shapefile')
+            
+        Returns:
+            Path to saved file
+        """
+        from shapely.geometry import box
+        
+        if merged_detections['num_detections'] == 0:
+            logger.warning("No detections to save!")
+            empty_gdf = gpd.GeoDataFrame(columns=['geometry', 'class', 'confidence', 'class_id'], crs=crs)
+            empty_gdf.to_file(output_path, driver=driver)
+            return output_path
+        
+        boxes = merged_detections['boxes']
+        confidences = merged_detections['confidences']
+        class_ids = merged_detections['class_ids']
+        class_names = merged_detections['class_names']
+        
+        # Convert boxes to GeoDataFrame
+        geometries = []
+        for bbox in boxes:
+            x1, y1, x2, y2 = bbox
+            
+            # Transform corners to geographic coordinates
+            x1_geo = reference_geotransform[0] + x1 * reference_geotransform[1] + y1 * reference_geotransform[2]
+            y1_geo = reference_geotransform[3] + x1 * reference_geotransform[4] + y1 * reference_geotransform[5]
+            x2_geo = reference_geotransform[0] + x2 * reference_geotransform[1] + y2 * reference_geotransform[2]
+            y2_geo = reference_geotransform[3] + x2 * reference_geotransform[4] + y2 * reference_geotransform[5]
+            
+            # Create box geometry
+            geometries.append(box(
+                min(x1_geo, x2_geo),
+                min(y1_geo, y2_geo),
+                max(x1_geo, x2_geo),
+                max(y1_geo, y2_geo)
+            ))
+        
+        gdf = gpd.GeoDataFrame({
+            'geometry': geometries,
+            'class': class_names,
+            'confidence': confidences,
+            'class_id': class_ids
+        }, crs=crs)
+        
+        # Save to file
+        gdf.to_file(output_path, driver=driver)
+        logger.info(f"Saved {len(gdf)} merged detections (before processing) to {output_path}")
+        
+        return output_path
+    
     def _non_maximum_suppression(
         self,
         boxes: np.ndarray,
@@ -1145,3 +1211,25 @@ class QalaPipeline:
             logger.info(f"Exported centroids separately to {centroids_path}")
         
         return output_path
+    
+    def save_processed_results(
+        self,
+        gdf: gpd.GeoDataFrame,
+        output_path: str,
+        driver: str = "GPKG",
+        include_centroids: bool = True
+    ) -> str:
+        """
+        Save processed results (after processing) to file.
+        Alias for export_results() for consistency.
+        
+        Args:
+            gdf: GeoDataFrame with processed results
+            output_path: Output file path
+            driver: GDAL driver name ('GPKG', 'GeoJSON', 'ESRI Shapefile')
+            include_centroids: If True, adds centroid columns and creates separate centroids file
+            
+        Returns:
+            Path to saved file
+        """
+        return self.export_results(gdf, output_path, driver, include_centroids)
