@@ -8,11 +8,10 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
-from sklearn.cluster import DBSCAN
+#from sklearn.cluster import DBSCAN
 from scipy.spatial import distance_matrix
 
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger(__name__) 
 try:
     from scipy import ndimage
     from skimage import measure
@@ -1233,5 +1232,4 @@ class QalaPipeline:
         Returns:
             Path to saved file
         """
-
         return self.export_results(gdf, output_path, driver, include_centroids)
