@@ -235,13 +235,21 @@ class YOLODetector:
         # Get class names
         class_names = [results.names[int(cls_id)] for cls_id in class_ids]
         
-        return {
+        detection = {
             'num_detections': len(boxes),
             'boxes': box_coords,
             'confidences': confidences,
             'class_ids': class_ids,
             'class_names': class_names
         }
+        
+        # Extract masks if available (instance segmentation)
+        if results.masks is not None:
+            # .xy gives list of polygon arrays (N, 2) in pixel coordinates
+            detection['masks'] = [seg.cpu().numpy() if hasattr(seg, 'cpu') else np.asarray(seg)
+                                  for seg in results.masks.xy]
+        
+        return detection
     
     def get_model_info(self) -> Dict:
         """
@@ -279,13 +287,19 @@ class YOLODetector:
         
         mask = detections['confidences'] >= min_confidence
         
-        return {
+        filtered = {
             'num_detections': int(mask.sum()),
             'boxes': detections['boxes'][mask],
             'confidences': detections['confidences'][mask],
             'class_ids': detections['class_ids'][mask],
             'class_names': [name for name, m in zip(detections['class_names'], mask) if m]
         }
+        
+        # Preserve masks if present
+        if 'masks' in detections and len(detections['masks']) > 0:
+            filtered['masks'] = [seg for seg, m in zip(detections['masks'], mask) if m]
+        
+        return filtered
     
     def filter_by_class(
         self,
@@ -307,10 +321,16 @@ class YOLODetector:
         
         mask = np.array([name in class_names for name in detections['class_names']])
         
-        return {
+        filtered = {
             'num_detections': int(mask.sum()),
             'boxes': detections['boxes'][mask],
             'confidences': detections['confidences'][mask],
             'class_ids': detections['class_ids'][mask],
             'class_names': [name for name, m in zip(detections['class_names'], mask) if m]
         }
+        
+        # Preserve masks if present
+        if 'masks' in detections and len(detections['masks']) > 0:
+            filtered['masks'] = [seg for seg, m in zip(detections['masks'], mask) if m]
+        
+        return filtered
