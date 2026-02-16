@@ -1,5 +1,5 @@
 """
-Postprocessing utilities for detection merging, NMS, and qanat-specific analysis.
+Postprocessing utilities for detection merging, NMS, and qalat-specific analysis.
 """
 
 import logging
@@ -208,7 +208,10 @@ class DetectionPostprocessor:
         driver: str = "GPKG"
     ) -> str:
         """
-        Save merged detections (before processing) to GeoPackage.
+        Save merged detections (before processing) to GeoPackage as bounding boxes.
+        
+        For instance segmentation with polygon geometries, use
+        save_merged_instance_segmentation() instead.
         
         Args:
             merged_detections: Merged detection dictionary from merge_tile_detections()
@@ -261,9 +264,268 @@ class DetectionPostprocessor:
         
         # Save to file
         gdf.to_file(output_path, driver=driver)
-        logger.info(f"Saved {len(gdf)} merged detections (before processing) to {output_path}")
+        logger.info(f"Saved {len(gdf)} merged detections (bounding boxes) to {output_path}")
         
         return output_path
+
+    def save_merged_instance_segmentation(
+        self,
+        merged_detections: Dict,
+        reference_geotransform: Tuple[float, ...],
+        output_path: str,
+        crs: str = "EPSG:4326",
+        driver: str = "GPKG"
+    ) -> str:
+        """
+        Save merged instance segmentation detections as polygon geometries.
+        
+        Converts masks (polygon arrays or binary masks) to geographic polygon
+        geometries and saves them. Falls back to bounding boxes for detections
+        without valid mask data.
+        
+        Args:
+            merged_detections: Merged detection dictionary from merge_tile_detections().
+                Must contain 'masks' key with polygon (N,2) or binary (H,W) mask arrays.
+                Optionally contains 'tile_offsets' for coordinate transformation.
+            reference_geotransform: Geotransform from clipped reference image
+                (origin_x, pixel_width, rotation_x, origin_y, rotation_y, pixel_height)
+            output_path: Output file path
+            crs: Target CRS (default: "EPSG:4326")
+            driver: GDAL driver name ('GPKG', 'GeoJSON', 'ESRI Shapefile')
+            
+        Returns:
+            Path to saved file
+        """
+        from shapely.geometry import Polygon, box
+        
+        if merged_detections['num_detections'] == 0:
+            logger.warning("No instance segmentation detections to save!")
+            empty_gdf = gpd.GeoDataFrame(
+                columns=['geometry', 'class', 'confidence', 'class_id', 'geom_type'],
+                crs=crs
+            )
+            empty_gdf.to_file(output_path, driver=driver)
+            return output_path
+        
+        # Check if masks are available
+        has_masks = 'masks' in merged_detections and len(merged_detections['masks']) > 0
+        if not has_masks:
+            logger.warning("No masks found in detections! Falling back to save_merged_detections (bounding boxes).")
+            return self.save_merged_detections(
+                merged_detections, reference_geotransform, output_path, crs, driver
+            )
+        
+        masks = merged_detections['masks']
+        confidences = merged_detections['confidences']
+        class_ids = merged_detections['class_ids']
+        class_names = merged_detections['class_names']
+        tile_offsets = merged_detections.get('tile_offsets', None)
+        
+        # Also keep boxes for fallback
+        has_boxes = 'boxes' in merged_detections and len(merged_detections['boxes']) > 0
+        boxes = merged_detections['boxes'] if has_boxes else None
+        
+        if measure is None:
+            logger.warning(
+                "skimage.measure not available for binary mask conversion. "
+                "Binary masks will fall back to bounding boxes."
+            )
+        
+        geometries = []
+        valid_confidences = []
+        valid_class_ids = []
+        valid_class_names = []
+        geom_types = []  # Track whether geometry came from mask or bbox fallback
+        
+        for i, mask in enumerate(masks):
+            mask = np.asarray(mask)
+            geom = None
+            geom_type = "polygon"
+            
+            # --- Polygon format (N, 2) ---
+            if mask.ndim == 2 and mask.shape[1] == 2:
+                if len(mask) < 3:
+                    # Not enough points for a polygon, fall back to bbox
+                    geom, geom_type = self._fallback_bbox_geometry(
+                        i, boxes, reference_geotransform
+                    )
+                else:
+                    poly_coords = mask.copy()
+                    
+                    # Apply tile offset if provided
+                    if tile_offsets and i < len(tile_offsets):
+                        x_offset, y_offset = tile_offsets[i]
+                        poly_coords[:, 0] += x_offset
+                        poly_coords[:, 1] += y_offset
+                    
+                    # Transform polygon coordinates to geographic
+                    coords_geo = []
+                    for x, y in poly_coords:
+                        x_geo = (reference_geotransform[0]
+                                 + x * reference_geotransform[1]
+                                 + y * reference_geotransform[2])
+                        y_geo = (reference_geotransform[3]
+                                 + x * reference_geotransform[4]
+                                 + y * reference_geotransform[5])
+                        coords_geo.append((x_geo, y_geo))
+                    
+                    # Close polygon if not closed
+                    if coords_geo[0] != coords_geo[-1]:
+                        coords_geo.append(coords_geo[0])
+                    
+                    try:
+                        geom = Polygon(coords_geo)
+                        if not geom.is_valid:
+                            geom = geom.buffer(0)  # Attempt to fix invalid geometry
+                        if not geom.is_valid or geom.area == 0:
+                            geom, geom_type = self._fallback_bbox_geometry(
+                                i, boxes, reference_geotransform
+                            )
+                    except Exception as e:
+                        logger.debug(f"Failed to create polygon from mask {i}: {e}")
+                        geom, geom_type = self._fallback_bbox_geometry(
+                            i, boxes, reference_geotransform
+                        )
+            
+            # --- Binary mask format (H, W) ---
+            elif mask.ndim == 2:
+                if measure is None:
+                    # No skimage, fall back to bbox
+                    geom, geom_type = self._fallback_bbox_geometry(
+                        i, boxes, reference_geotransform
+                    )
+                else:
+                    try:
+                        contours = measure.find_contours(mask, 0.5)
+                        if len(contours) == 0:
+                            geom, geom_type = self._fallback_bbox_geometry(
+                                i, boxes, reference_geotransform
+                            )
+                        else:
+                            largest_contour = max(contours, key=len)
+                            if len(largest_contour) < 3:
+                                geom, geom_type = self._fallback_bbox_geometry(
+                                    i, boxes, reference_geotransform
+                                )
+                            else:
+                                contour = largest_contour.copy()
+                                
+                                # Apply tile offset if provided
+                                if tile_offsets and i < len(tile_offsets):
+                                    x_offset, y_offset = tile_offsets[i]
+                                    contour[:, 1] += x_offset  # col = x
+                                    contour[:, 0] += y_offset  # row = y
+                                
+                                # Transform to geographic (contours are row, col = y, x)
+                                coords_geo = []
+                                for row, col in contour:
+                                    x_geo = (reference_geotransform[0]
+                                             + col * reference_geotransform[1]
+                                             + row * reference_geotransform[2])
+                                    y_geo = (reference_geotransform[3]
+                                             + col * reference_geotransform[4]
+                                             + row * reference_geotransform[5])
+                                    coords_geo.append((x_geo, y_geo))
+                                
+                                # Close polygon
+                                if coords_geo[0] != coords_geo[-1]:
+                                    coords_geo.append(coords_geo[0])
+                                
+                                geom = Polygon(coords_geo)
+                                if not geom.is_valid:
+                                    geom = geom.buffer(0)
+                                if not geom.is_valid or geom.area == 0:
+                                    geom, geom_type = self._fallback_bbox_geometry(
+                                        i, boxes, reference_geotransform
+                                    )
+                    except Exception as e:
+                        logger.debug(f"Failed to convert binary mask {i} to polygon: {e}")
+                        geom, geom_type = self._fallback_bbox_geometry(
+                            i, boxes, reference_geotransform
+                        )
+            else:
+                # Unexpected mask shape, fall back to bbox
+                logger.debug(f"Unexpected mask shape for mask {i}: {mask.shape}")
+                geom, geom_type = self._fallback_bbox_geometry(
+                    i, boxes, reference_geotransform
+                )
+            
+            # Append valid geometry
+            if geom is not None and geom.area > 0:
+                geometries.append(geom)
+                valid_confidences.append(confidences[i] if i < len(confidences) else 0.0)
+                valid_class_ids.append(class_ids[i] if i < len(class_ids) else 0)
+                valid_class_names.append(class_names[i] if i < len(class_names) else self.class_name)
+                geom_types.append(geom_type)
+            else:
+                logger.debug(f"Skipping mask {i}: no valid geometry produced")
+        
+        if len(geometries) == 0:
+            logger.warning("No valid polygon geometries produced from masks!")
+            empty_gdf = gpd.GeoDataFrame(
+                columns=['geometry', 'class', 'confidence', 'class_id', 'geom_type'],
+                crs=crs
+            )
+            empty_gdf.to_file(output_path, driver=driver)
+            return output_path
+        
+        gdf = gpd.GeoDataFrame({
+            'geometry': geometries,
+            'class': valid_class_names,
+            'confidence': valid_confidences,
+            'class_id': valid_class_ids,
+            'geom_type': geom_types  # 'polygon' or 'bbox_fallback'
+        }, crs=crs)
+        
+        # Save to file
+        gdf.to_file(output_path, driver=driver)
+        
+        n_polygons = geom_types.count('polygon')
+        n_fallback = geom_types.count('bbox_fallback')
+        logger.info(
+            f"Saved {len(gdf)} instance segmentation detections to {output_path} "
+            f"({n_polygons} polygons, {n_fallback} bbox fallbacks)"
+        )
+        
+        return output_path
+
+    def _fallback_bbox_geometry(
+        self,
+        index: int,
+        boxes: np.ndarray,
+        reference_geotransform: Tuple[float, ...]
+    ) -> Tuple:
+        """
+        Create a bounding box geometry as fallback when mask-to-polygon conversion fails.
+        
+        Args:
+            index: Detection index
+            boxes: All bounding boxes (N, 4) in xyxy pixel coordinates, or None
+            reference_geotransform: Geotransform for coordinate conversion
+            
+        Returns:
+            Tuple of (geometry or None, geom_type string)
+        """
+        from shapely.geometry import box
+        
+        if boxes is None or index >= len(boxes):
+            return None, 'bbox_fallback'
+        
+        x1, y1, x2, y2 = boxes[index]
+        
+        x1_geo = reference_geotransform[0] + x1 * reference_geotransform[1] + y1 * reference_geotransform[2]
+        y1_geo = reference_geotransform[3] + x1 * reference_geotransform[4] + y1 * reference_geotransform[5]
+        x2_geo = reference_geotransform[0] + x2 * reference_geotransform[1] + y2 * reference_geotransform[2]
+        y2_geo = reference_geotransform[3] + x2 * reference_geotransform[4] + y2 * reference_geotransform[5]
+        
+        geom = box(
+            min(x1_geo, x2_geo),
+            min(y1_geo, y2_geo),
+            max(x1_geo, x2_geo),
+            max(y1_geo, y2_geo)
+        )
+        
+        return geom, 'bbox_fallback'
     
     def _non_maximum_suppression(
         self,
@@ -347,7 +609,7 @@ class DetectionPostprocessor:
 
 
 class QalaPipeline:
-    """Process detected qanats using spatial join approach (without clustering)."""
+    """Process detected qalats using spatial join approach (without clustering)."""
     
     def __init__(
         self,
@@ -686,7 +948,7 @@ class QalaPipeline:
         
         Args:
             gdf: GeoDataFrame with bbox geometries
-            class_filter: Class name to filter (e.g., 'qanat')
+            class_filter: Class name to filter (e.g., 'qalat')
             overlap_threshold: Minimum overlap ratio to merge (0.0-1.0, default: 0.9)
             
         Returns:
